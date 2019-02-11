@@ -47,6 +47,10 @@
 #define CUDANODE
 #endif
 
+#ifdef OPENCL
+#undef CUDANODE
+#endif
+
 /* Adjustable Parameters */
 #define MAXNODES      37       /* maximum number of connected nodes  */
 #define LQLEN         100      /* listen() queue length              */

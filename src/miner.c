@@ -11,10 +11,28 @@
 
 #include <inttypes.h>
 
-#ifdef CUDANODE
+#ifdef OPENCL
+
+#ifdef __APPLE__
+#include <OpenCL/opencl.h>
+#else
+#include <CL/cl.h>
+#endif
+
+extern int trigg_init_cl(byte difficulty, byte *blockNumber);
+extern char *gen_haiku(byte *mroot, unsigned long long *nHaiku);
+extern void setup_kernel();
+
+#elif CUDANODE
 extern int trigg_init_cuda(byte difficulty, byte *blockNumber);
 extern void trigg_free_cuda();
 extern char *trigg_generate_cuda(byte *mroot, unsigned long long *nHaiku);
+#endif
+
+#undef GPUEXISTS
+
+#if defined(OPENCL) || defined(CUDANODE)
+#define GPUEXISTS 1
 #endif
 
 /* miner blockin blockout -- child process */
@@ -70,29 +88,38 @@ int miner(char *blockin, char *blockout)
          plog("miner: beginning solve: %s block: 0x%s", blockin,
               bnum2hex(bt.bnum));
 
-      /* Create the solution state-space beginning with 
+      /* Create the solution state-space beginning with
        * the first plausible link on the TRIGG chain.
        */
       trigg_solve(bt.mroot, bt.difficulty[0], bt.bnum);
 
+#ifdef OPENCL
+       initGPU = -1;
+       setup_kernel();
+       initGPU = trigg_init_cl(bt.difficulty[0], bt.bnum);
+#elif CUDANODE
+       /* Initialize CUDA specific memory allocations
+        * and check for obvious errors
+        */
+       initGPU = -1;
+       initGPU = trigg_init_cuda(bt.difficulty[0], bt.bnum);
+#endif
+
+#ifdef GPUEXISTS
+       if(initGPU==-1) {
+           error("Cuda initialization failed. Check nvidia-smi");
 #ifdef CUDANODE
-
-      /* Initialize CUDA specific memory allocations
-       * and check for obvious errors
-       */
-      initGPU = -1;
-      initGPU = trigg_init_cuda(bt.difficulty[0], bt.bnum);
-      if(initGPU==-1) {
-         error("Cuda initialization failed. Check nvidia-smi");
-         trigg_free_cuda();
-         break;
-      }
-      if(initGPU<1 || initGPU>64) {
-         error("Unsupported number of GPUs detected -> %d",initGPU);
-         trigg_free_cuda();
-         break;
-      }
-
+           trigg_free_cuda();
+#endif
+           break;
+       }
+       if(initGPU<1 || initGPU>64) {
+           error("Unsupported number of GPUs detected -> %d",initGPU);
+#ifdef CUDANODE
+           trigg_free_cuda();
+#endif
+           break;
+       }
 #endif
 
       /* Traverse all TRIGG links to build the
@@ -103,18 +130,20 @@ int miner(char *blockin, char *blockout)
          if(!Running) break;
          if(haiku != NULL) break;
 
-#ifdef CUDANODE
+#ifdef GPUEXISTS
 
-         haiku = trigg_generate_cuda(bt.mroot, &hcount);
-         if(total_hcount == hcount) nanosleep(&chill, NULL);
-         else total_hcount = hcount;
-
+#ifdef OPENCL
+          haiku = gen_haiku(bt.mroot, &hcount);
+#elif CUDANODE
+          haiku = trigg_generate_cuda(bt.mroot, &hcount);
 #endif
-#ifdef CPUNODE
+          if(total_hcount == hcount) nanosleep(&chill, NULL);
+          else total_hcount = hcount;
 
-         haiku = trigg_generate(bt.mroot, bt.difficulty[0]);
-         hcount++;
+#elif CPUNODE
 
+          haiku = trigg_generate(bt.mroot, bt.difficulty[0]);
+          hcount++;
 #endif
       }
 
@@ -122,7 +151,9 @@ int miner(char *blockin, char *blockout)
 
       /* Free CUDA specific memory allocations */
       trigg_free_cuda();
+#endif
 
+#ifdef OPENCL
 #endif
 
       /* Calculate and write Haiku/s to disk */
